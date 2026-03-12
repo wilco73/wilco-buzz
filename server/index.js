@@ -63,6 +63,7 @@ function getRoomPublicState(room) {
     timerElapsed: room.timerElapsed,
     timerDuration: room.timerDuration, // 0 = stopwatch (count up), >0 = countdown in seconds
     timerExpired: room.timerExpired,
+    serverTime: Date.now(), // for client clock offset correction
     players,
     buzzes: room.buzzes,
   };

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { T, formatTime } from '../theme.js';
+import { useTimer } from '../useTimer.js';
 
 const BUZZ_MODES = {
   standard: { label: 'Standard', icon: '🔒', color: T.accent, desc: '1 buzz/joueur, admin débloque' },
@@ -13,24 +14,9 @@ export default function AdminView({ room, socket, onLeave, initialStreamerMode }
   const [streamerMode, setStreamerMode] = useState(initialStreamerMode || false);
   const [showOverlay, setShowOverlay] = useState(false);
   const [showEmbed, setShowEmbed] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
   const [pwVisible, setPwVisible] = useState(false);
   const [customDuration, setCustomDuration] = useState('');
-  const timerRef = useRef(null);
-
-  // Timer display
-  useEffect(() => {
-    clearInterval(timerRef.current);
-    if (room?.timerRunning && room?.timerStart) {
-      const base = room.timerElapsed || 0;
-      timerRef.current = setInterval(() => {
-        setElapsed(base + (Date.now() - room.timerStart));
-      }, 50);
-    } else {
-      setElapsed(room?.timerElapsed || 0);
-    }
-    return () => clearInterval(timerRef.current);
-  }, [room?.timerRunning, room?.timerStart, room?.timerElapsed]);
+  const elapsed = useTimer(room);
 
   if (!room) {
     return (

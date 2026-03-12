@@ -1,19 +1,9 @@
 import { useState, useEffect } from 'react';
 import { T, formatTime } from '../theme.js';
+import { useTimer } from '../useTimer.js';
 
 export default function OverlayView({ room }) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    let interval;
-    if (room?.timerRunning && room?.timerStart) {
-      const base = room.timerElapsed || 0;
-      interval = setInterval(() => setElapsed(base + (Date.now() - room.timerStart)), 50);
-    } else {
-      setElapsed(room?.timerElapsed || 0);
-    }
-    return () => clearInterval(interval);
-  }, [room?.timerRunning, room?.timerStart, room?.timerElapsed]);
+  const elapsed = useTimer(room);
 
   const buzzes = room?.buzzes || [];
   const timerIsActive = room?.timerRunning || (room?.timerElapsed > 0);
