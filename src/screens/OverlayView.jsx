@@ -7,14 +7,16 @@ export default function OverlayView({ room }) {
   useEffect(() => {
     let interval;
     if (room?.timerRunning && room?.timerStart) {
-      interval = setInterval(() => setElapsed(Date.now() - room.timerStart), 50);
+      const base = room.timerElapsed || 0;
+      interval = setInterval(() => setElapsed(base + (Date.now() - room.timerStart)), 50);
     } else {
-      setElapsed(0);
+      setElapsed(room?.timerElapsed || 0);
     }
     return () => clearInterval(interval);
-  }, [room?.timerRunning, room?.timerStart]);
+  }, [room?.timerRunning, room?.timerStart, room?.timerElapsed]);
 
   const buzzes = room?.buzzes || [];
+  const timerIsActive = room?.timerRunning || (room?.timerElapsed > 0);
 
   return (
     <div style={{
@@ -24,7 +26,7 @@ export default function OverlayView({ room }) {
       minHeight: '100vh',
     }}>
       {/* Timer */}
-      {room?.timerRunning && (
+      {timerIsActive && (
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           <div style={{
             display: 'inline-block',

@@ -12,7 +12,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 
-// Serve built frontend in production
 const distPath = path.join(__dirname, '..', 'dist');
 app.use(express.static(distPath));
 
@@ -30,7 +29,6 @@ function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code = '';
   for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)];
-  // Make sure it's unique
   if (rooms.has(code)) return generateRoomCode();
   return code;
 }
@@ -41,6 +39,16 @@ function generatePassword() {
   for (let i = 0; i < 6; i++) pw += chars[Math.floor(Math.random() * chars.length)];
   return pw;
 }
+
+/**
+ * Buzz modes:
+ *  - "standard"  : Chaque joueur peut buzzer 1 fois. Son buzzer se désactive après.
+ *                   L'admin peut réactiver manuellement (un par un ou tous).
+ *  - "exclusive"  : Dès qu'UN joueur buzz, TOUS les buzzers se désactivent.
+ *                   Seul le plus rapide passe. L'admin reset pour la question suivante.
+ *  - "rebuzz"    : Les joueurs peuvent buzzer autant de fois qu'ils veulent.
+ *                   Chaque buzz est enregistré dans la liste (même joueur = plusieurs entrées).
+ */
 
 function getRoomPublicState(room) {
   const players = {};
@@ -57,9 +65,10 @@ function getRoomPublicState(room) {
     code: room.code,
     hasPassword: !!room.password,
     buzzerEnabled: room.buzzerEnabled,
-    allowRebuzz: room.allowRebuzz,
+    buzzMode: room.buzzMode,
     timerRunning: room.timerRunning,
     timerStart: room.timerStart,
+    timerElapsed: room.timerElapsed,
     players,
     buzzes: room.buzzes,
   };
@@ -86,9 +95,10 @@ io.on('connection', (socket) => {
       password: usePassword ? generatePassword() : null,
       adminSocketId: socket.id,
       buzzerEnabled: false,
-      allowRebuzz: false,
+      buzzMode: 'standard', // standard | exclusive | rebuzz
       timerRunning: false,
-      timerStart: null,
+      timerStart: null,     // timestamp when timer was last started/resumed
+      timerElapsed: 0,      // accumulated ms from previous runs (for pause/resume)
       players: {},
       buzzes: [],
       createdAt: Date.now(),
@@ -101,7 +111,7 @@ io.on('connection', (socket) => {
     callback({ ok: true, room: getRoomAdminState(room) });
   });
 
-  // ─── CHECK ROOM (before joining) ───
+  // ─── CHECK ROOM ───
   socket.on('check-room', ({ code }, callback) => {
     const room = rooms.get(code);
     if (!room) return callback({ ok: false, error: 'Room introuvable' });
@@ -115,7 +125,6 @@ io.on('connection', (socket) => {
     if (room.password && password !== room.password) {
       return callback({ ok: false, error: 'Mot de passe incorrect' });
     }
-    // Check pseudo uniqueness
     const pseudoTaken = Object.values(room.players).some(
       (p) => !p.kicked && p.pseudo.toLowerCase() === pseudo.toLowerCase()
     );
@@ -136,7 +145,6 @@ io.on('connection', (socket) => {
     isAdmin = false;
     socket.join(`room:${code}`);
 
-    // Notify admin & overlay
     io.to(`admin:${code}`).emit('room-update', getRoomAdminState(room));
     io.to(`overlay:${code}`).emit('room-update', getRoomPublicState(room));
 
@@ -163,71 +171,145 @@ io.on('connection', (socket) => {
     if (!player || player.kicked || player.buzzerDisabled) return callback?.({ ok: false });
     if (!room.buzzerEnabled) return callback?.({ ok: false });
 
-    // Already buzzed?
-    if (room.buzzes.find((b) => b.playerId === currentPlayerId)) {
-      return callback?.({ ok: false, error: 'Déjà buzzé' });
+    const buzzTime = Date.now();
+    // Calculate relative time: accumulated elapsed + time since last start
+    let relativeTime = 0;
+    if (room.timerStart) {
+      relativeTime = room.timerElapsed + (buzzTime - room.timerStart);
     }
 
-    const buzzTime = Date.now();
-    const relativeTime = room.timerStart ? buzzTime - room.timerStart : 0;
+    // Mode-specific logic
+    if (room.buzzMode === 'rebuzz') {
+      // Rebuzz: allow multiple buzzes from same player, each is a new entry
+      room.buzzes.push({
+        playerId: currentPlayerId,
+        pseudo: player.pseudo,
+        avatar: player.avatar,
+        time: buzzTime,
+        relativeTime,
+      });
 
-    room.buzzes.push({
-      playerId: currentPlayerId,
-      pseudo: player.pseudo,
-      avatar: player.avatar,
-      time: buzzTime,
-      relativeTime,
-    });
-    room.buzzes.sort((a, b) => a.time - b.time);
+    } else if (room.buzzMode === 'exclusive') {
+      // Exclusive: only first buzz counts, then everyone is locked
+      if (room.buzzes.length > 0) {
+        return callback?.({ ok: false, error: 'Quelqu\'un a déjà buzzé' });
+      }
+      room.buzzes.push({
+        playerId: currentPlayerId,
+        pseudo: player.pseudo,
+        avatar: player.avatar,
+        time: buzzTime,
+        relativeTime,
+      });
+      // Lock ALL players
+      for (const p of Object.values(room.players)) {
+        if (!p.kicked) p.buzzerDisabled = true;
+      }
 
-    // If no rebuzz, disable this player's buzzer
-    if (!room.allowRebuzz) {
+    } else {
+      // Standard: one buzz per player, then that player is locked
+      if (room.buzzes.find((b) => b.playerId === currentPlayerId)) {
+        return callback?.({ ok: false, error: 'Déjà buzzé' });
+      }
+      room.buzzes.push({
+        playerId: currentPlayerId,
+        pseudo: player.pseudo,
+        avatar: player.avatar,
+        time: buzzTime,
+        relativeTime,
+      });
       player.buzzerDisabled = true;
     }
 
-    // Broadcast update
-    io.to(`room:${currentRoom}`).emit('room-update', getRoomPublicState(room));
-    io.to(`admin:${currentRoom}`).emit('room-update', getRoomAdminState(room));
-    io.to(`overlay:${currentRoom}`).emit('room-update', getRoomPublicState(room));
-
+    room.buzzes.sort((a, b) => a.time - b.time);
+    broadcast(room);
     callback?.({ ok: true });
   });
 
   // ─── ADMIN ACTIONS ───
+
+  // Toggle buzzer on/off (does NOT touch timer)
   socket.on('admin:toggle-buzzer', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.buzzerEnabled = !room.buzzerEnabled;
-    if (room.buzzerEnabled && !room.timerRunning) {
-      room.timerRunning = true;
-      room.timerStart = Date.now();
-    }
     broadcast(room);
   });
 
-  socket.on('admin:toggle-rebuzz', () => {
+  // Set buzz mode: standard | exclusive | rebuzz
+  socket.on('admin:set-buzz-mode', ({ mode }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
-    room.allowRebuzz = !room.allowRebuzz;
+    if (!['standard', 'exclusive', 'rebuzz'].includes(mode)) return;
+    room.buzzMode = mode;
     broadcast(room);
   });
 
-  socket.on('admin:new-round', () => {
+  // Timer: start (resets timer to 0 and starts)
+  socket.on('admin:timer-start', () => {
+    if (!currentRoom || !isAdmin) return;
+    const room = rooms.get(currentRoom);
+    if (!room) return;
+    room.timerRunning = true;
+    room.timerStart = Date.now();
+    room.timerElapsed = 0;
+    broadcast(room);
+  });
+
+  // Timer: pause (accumulates elapsed, stops counting)
+  socket.on('admin:timer-pause', () => {
+    if (!currentRoom || !isAdmin) return;
+    const room = rooms.get(currentRoom);
+    if (!room || !room.timerRunning) return;
+    room.timerElapsed += Date.now() - room.timerStart;
+    room.timerRunning = false;
+    room.timerStart = null;
+    broadcast(room);
+  });
+
+  // Timer: resume (continues from accumulated elapsed)
+  socket.on('admin:timer-resume', () => {
+    if (!currentRoom || !isAdmin) return;
+    const room = rooms.get(currentRoom);
+    if (!room || room.timerRunning) return;
+    room.timerRunning = true;
+    room.timerStart = Date.now();
+    // timerElapsed stays as-is, we'll add to it
+    broadcast(room);
+  });
+
+  // Timer: stop (resets to 0, stops)
+  socket.on('admin:timer-stop', () => {
+    if (!currentRoom || !isAdmin) return;
+    const room = rooms.get(currentRoom);
+    if (!room) return;
+    room.timerRunning = false;
+    room.timerStart = null;
+    room.timerElapsed = 0;
+    broadcast(room);
+  });
+
+  // New round: clear buzzes, re-enable all buzzers, optionally restart timer
+  socket.on('admin:new-round', ({ withTimer }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.buzzes = [];
-    room.timerRunning = true;
-    room.timerStart = Date.now();
     room.buzzerEnabled = true;
     for (const p of Object.values(room.players)) {
-      p.buzzerDisabled = false;
+      if (!p.kicked) p.buzzerDisabled = false;
+    }
+    if (withTimer) {
+      room.timerRunning = true;
+      room.timerStart = Date.now();
+      room.timerElapsed = 0;
     }
     broadcast(room);
   });
 
+  // Reset: clear everything
   socket.on('admin:reset', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -235,9 +317,22 @@ io.on('connection', (socket) => {
     room.buzzes = [];
     room.timerRunning = false;
     room.timerStart = null;
+    room.timerElapsed = 0;
     room.buzzerEnabled = false;
     for (const p of Object.values(room.players)) {
-      p.buzzerDisabled = false;
+      if (!p.kicked) p.buzzerDisabled = false;
+    }
+    broadcast(room);
+  });
+
+  // Clear buzzes only (keep timer, keep buzzer state)
+  socket.on('admin:clear-buzzes', () => {
+    if (!currentRoom || !isAdmin) return;
+    const room = rooms.get(currentRoom);
+    if (!room) return;
+    room.buzzes = [];
+    for (const p of Object.values(room.players)) {
+      if (!p.kicked) p.buzzerDisabled = false;
     }
     broadcast(room);
   });
@@ -248,12 +343,8 @@ io.on('connection', (socket) => {
     if (!room || !room.players[playerId]) return;
     room.players[playerId].kicked = true;
     room.buzzes = room.buzzes.filter((b) => b.playerId !== playerId);
-
-    // Notify the kicked player
     const kickedSocket = room.players[playerId].socketId;
-    if (kickedSocket) {
-      io.to(kickedSocket).emit('kicked');
-    }
+    if (kickedSocket) io.to(kickedSocket).emit('kicked');
     broadcast(room);
   });
 
@@ -300,11 +391,9 @@ io.on('connection', (socket) => {
     if (!room) return;
 
     if (isAdmin) {
-      // Admin left — close the room, notify everyone
       io.to(`room:${currentRoom}`).emit('room-closed');
       rooms.delete(currentRoom);
     } else if (currentPlayerId) {
-      // Player left — remove them
       delete room.players[currentPlayerId];
       room.buzzes = room.buzzes.filter((b) => b.playerId !== currentPlayerId);
       broadcast(room);

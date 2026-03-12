@@ -16,9 +16,16 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
   }
 
   const player = room.players?.[playerId];
-  const myBuzz = room.buzzes?.find((b) => b.playerId === playerId);
-  const buzzRank = room.buzzes?.findIndex((b) => b.playerId === playerId);
-  const isBuzzerActive = room.buzzerEnabled && player && !player.buzzerDisabled && !myBuzz;
+  const myBuzzes = room.buzzes?.filter((b) => b.playerId === playerId) || [];
+  const myFirstBuzz = myBuzzes[0];
+  const firstBuzzRank = room.buzzes?.findIndex((b) => b.playerId === playerId);
+  const hasBuzzed = myBuzzes.length > 0;
+
+  // In rebuzz mode: always active as long as buzzer is enabled and player not disabled
+  // In standard/exclusive: active only if haven't buzzed yet
+  const isRebuzzMode = room.buzzMode === 'rebuzz';
+  const isBuzzerActive = room.buzzerEnabled && player && !player.buzzerDisabled
+    && (isRebuzzMode || !hasBuzzed);
 
   const handleBuzz = async () => {
     if (!isBuzzerActive) return;
@@ -66,14 +73,24 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
       }}>ROOM {room.code}</div>
 
       {/* Buzz result */}
-      {myBuzz && (
+      {hasBuzzed && !isRebuzzMode && (
         <div style={{
           color: T.green,
           fontFamily: "'Orbitron', monospace",
           fontSize: 18, fontWeight: 700,
           marginBottom: 16, textAlign: 'center',
         }}>
-          #{buzzRank + 1} — {formatTime(myBuzz.relativeTime)}
+          #{firstBuzzRank + 1}{myFirstBuzz.relativeTime > 0 ? ` — ${formatTime(myFirstBuzz.relativeTime)}` : ''}
+        </div>
+      )}
+      {isRebuzzMode && hasBuzzed && (
+        <div style={{
+          color: T.orange,
+          fontFamily: "'Orbitron', monospace",
+          fontSize: 14, fontWeight: 700,
+          marginBottom: 16, textAlign: 'center',
+        }}>
+          {myBuzzes.length} buzz{myBuzzes.length > 1 ? 'es' : ''}
         </div>
       )}
 
@@ -89,12 +106,12 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
           cursor: isBuzzerActive ? 'pointer' : 'not-allowed',
           background: isBuzzerActive
             ? `radial-gradient(circle at 35% 35%, #ff4477, ${T.accent}, ${T.accentDim})`
-            : myBuzz
+            : hasBuzzed && !isRebuzzMode
               ? `radial-gradient(circle at 35% 35%, #1a6b3a, #0d4a25, #093018)`
               : `radial-gradient(circle at 35% 35%, #2a2a3a, #1a1a26, #12121a)`,
           boxShadow: isBuzzerActive
             ? `0 0 60px ${T.accentGlow}, 0 0 120px rgba(255,51,102,0.15), inset 0 -8px 24px rgba(0,0,0,0.3)`
-            : myBuzz
+            : hasBuzzed && !isRebuzzMode
               ? `0 0 40px ${T.greenGlow}, inset 0 -8px 24px rgba(0,0,0,0.3)`
               : 'inset 0 -8px 24px rgba(0,0,0,0.3)',
           transition: 'all 0.2s ease',
@@ -107,13 +124,13 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
           fontSize: 'clamp(36px, 8vw, 56px)',
           fontWeight: 900,
           fontFamily: "'Orbitron', monospace",
-          color: isBuzzerActive ? '#fff' : myBuzz ? T.green : T.textMuted,
+          color: isBuzzerActive ? '#fff' : (hasBuzzed && !isRebuzzMode) ? T.green : T.textMuted,
           textShadow: isBuzzerActive ? '0 2px 20px rgba(255,255,255,0.3)' : 'none',
           letterSpacing: 4,
         }}>
-          {myBuzz ? '✓' : 'BUZZ'}
+          {(hasBuzzed && !isRebuzzMode) ? '✓' : 'BUZZ'}
         </span>
-        {!isBuzzerActive && !myBuzz && (
+        {!isBuzzerActive && !hasBuzzed && (
           <span style={{
             fontSize: 11, color: T.textMuted, marginTop: 8, letterSpacing: 2,
             fontFamily: "'JetBrains Mono', monospace",
@@ -129,7 +146,7 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
             marginBottom: 10, textTransform: 'uppercase',
           }}>Ordre des buzz</div>
           {room.buzzes.map((b, i) => (
-            <div key={b.playerId} style={{
+            <div key={`${b.playerId}-${b.time}`} style={{
               display: 'flex', alignItems: 'center', gap: 10,
               padding: '8px 12px', borderRadius: 10,
               background: b.playerId === playerId ? 'rgba(255,51,102,0.1)' : 'transparent',
@@ -145,10 +162,12 @@ export default function PlayerView({ room, playerId, playerInfo, onBuzz, onLeave
                 color: b.playerId === playerId ? T.accent : T.text,
                 fontSize: 13, fontWeight: 600, flex: 1,
               }}>{b.pseudo}</span>
-              <span style={{
-                color: T.textDim, fontSize: 11,
-                fontFamily: "'JetBrains Mono', monospace",
-              }}>{formatTime(b.relativeTime)}</span>
+              {b.relativeTime > 0 ? (
+                <span style={{
+                  color: T.textDim, fontSize: 11,
+                  fontFamily: "'JetBrains Mono', monospace",
+                }}>{formatTime(b.relativeTime)}</span>
+              ) : null}
             </div>
           ))}
         </div>

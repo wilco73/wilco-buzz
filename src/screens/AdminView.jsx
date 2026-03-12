@@ -1,25 +1,34 @@
 import { useState, useEffect, useRef } from 'react';
 import { T, formatTime } from '../theme.js';
 
+const BUZZ_MODES = {
+  standard: { label: 'Standard', icon: '🔒', color: T.accent, desc: '1 buzz par joueur, admin débloque' },
+  exclusive: { label: 'Exclusif', icon: '⚡', color: T.yellow, desc: 'Premier qui buzz gagne, tous bloqués' },
+  rebuzz: { label: 'Re-buzz', icon: '🔄', color: T.orange, desc: 'Buzz illimité pour tous' },
+};
+
 export default function AdminView({ room, socket, onLeave }) {
   const [streamerMode, setStreamerMode] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
+  const [showEmbed, setShowEmbed] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [pwVisible, setPwVisible] = useState(false);
   const timerRef = useRef(null);
 
-  // Timer
+  // Timer display: elapsed = accumulated + (now - start) if running
   useEffect(() => {
     clearInterval(timerRef.current);
     if (room?.timerRunning && room?.timerStart) {
+      const base = room.timerElapsed || 0;
       timerRef.current = setInterval(() => {
-        setElapsed(Date.now() - room.timerStart);
+        setElapsed(base + (Date.now() - room.timerStart));
       }, 50);
     } else {
-      setElapsed(0);
+      // Paused or stopped: show accumulated elapsed
+      setElapsed(room?.timerElapsed || 0);
     }
     return () => clearInterval(timerRef.current);
-  }, [room?.timerRunning, room?.timerStart]);
+  }, [room?.timerRunning, room?.timerStart, room?.timerElapsed]);
 
   if (!room) {
     return (
@@ -35,36 +44,22 @@ export default function AdminView({ room, socket, onLeave }) {
   const players = Object.entries(room.players || {}).filter(([, p]) => !p.kicked);
   const buzzes = room.buzzes || [];
   const overlayUrl = `${window.location.origin}/#overlay-${room.code}`;
+  const embedUrl = `${window.location.origin}/#embed-${room.code}`;
+  const embedUrlWithPassword = room.password
+    ? `${embedUrl}?password=${encodeURIComponent(room.password)}`
+    : embedUrl;
 
   const action = (event, data) => socket.emitNoAck(event, data);
 
-  // Password reveal logic for streamer mode
+  const timerIsActive = room.timerRunning || (room.timerElapsed > 0);
+
   const handlePasswordClick = () => {
     if (!streamerMode) return;
     setPwVisible(true);
     setTimeout(() => setPwVisible(false), 2000);
   };
 
-  const sectionTitle = (icon, label, count) => (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8,
-      marginBottom: 16,
-    }}>
-      <span style={{ fontSize: 16 }}>{icon}</span>
-      <span style={{ color: T.text, fontSize: 15, fontWeight: 700, letterSpacing: 1 }}>
-        {label}
-      </span>
-      {count !== undefined && (
-        <span style={{
-          background: T.surfaceHover, color: T.textDim,
-          fontSize: 11, fontWeight: 700, padding: '2px 8px',
-          borderRadius: 8, marginLeft: 4,
-        }}>{count}</span>
-      )}
-    </div>
-  );
-
-  const smallBtn = (label, color, borderColor, onClick) => (
+  const smallBtn = (label, color, borderColor, onClick, extra = {}) => (
     <button onClick={onClick} style={{
       padding: '6px 12px', borderRadius: 8,
       border: `1px solid ${borderColor}`,
@@ -72,6 +67,7 @@ export default function AdminView({ room, socket, onLeave }) {
       color, fontSize: 11, fontWeight: 700, cursor: 'pointer',
       fontFamily: "'JetBrains Mono', monospace",
       transition: 'all 0.15s',
+      ...extra,
     }}>{label}</button>
   );
 
@@ -80,6 +76,7 @@ export default function AdminView({ room, socket, onLeave }) {
       minHeight: '100vh',
       background: T.bg,
       padding: 16,
+      fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     }}>
       {/* ─── TOP BAR ─── */}
       <div style={{
@@ -100,14 +97,12 @@ export default function AdminView({ room, socket, onLeave }) {
               background: streamerMode ? 'rgba(156,39,176,0.15)' : 'transparent',
               color: streamerMode ? '#ce93d8' : T.textDim,
               fontSize: 11, fontWeight: 700, cursor: 'pointer',
-              fontFamily: "'JetBrains Mono', monospace",
             }}
           >{streamerMode ? '📺 Streamer ON' : '📺 Streamer'}</button>
           <button onClick={onLeave} style={{
             padding: '8px 14px', borderRadius: 10,
             border: `1px solid ${T.border}`, background: 'transparent',
             color: T.textMuted, fontSize: 11, fontWeight: 700, cursor: 'pointer',
-            fontFamily: "'JetBrains Mono', monospace",
           }}>Quitter</button>
         </div>
       </div>
@@ -128,7 +123,7 @@ export default function AdminView({ room, socket, onLeave }) {
         {room.password && (
           <div onClick={handlePasswordClick} style={{ cursor: streamerMode ? 'pointer' : 'default' }}>
             <div style={{ color: T.textDim, fontSize: 10, letterSpacing: 2, marginBottom: 4, textTransform: 'uppercase' }}>
-              Mot de passe {streamerMode && '(clic pour révéler)'}
+              Mot de passe {streamerMode && '(clic)'}
             </div>
             <div style={{
               fontFamily: "'Orbitron', monospace", fontSize: 20,
@@ -147,111 +142,215 @@ export default function AdminView({ room, socket, onLeave }) {
         </div>
       </div>
 
-      {/* ─── CONTROLS GRID ─── */}
+      {/* ─── BUZZER ON/OFF ─── */}
+      <button
+        onClick={() => action('admin:toggle-buzzer')}
+        style={{
+          width: '100%',
+          background: room.buzzerEnabled ? 'rgba(0,230,118,0.1)' : T.surface,
+          border: `2px solid ${room.buzzerEnabled ? T.green : T.border}`,
+          borderRadius: 16, padding: '18px 24px', cursor: 'pointer',
+          textAlign: 'center', transition: 'all 0.2s',
+          marginBottom: 12,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+        }}
+      >
+        <span style={{ fontSize: 28 }}>{room.buzzerEnabled ? '🟢' : '🔴'}</span>
+        <span style={{
+          fontFamily: "'Orbitron', monospace",
+          color: room.buzzerEnabled ? T.green : T.accent,
+          fontSize: 16, fontWeight: 800, letterSpacing: 2,
+        }}>{room.buzzerEnabled ? 'BUZZERS ACTIFS' : 'BUZZERS DÉSACTIVÉS'}</span>
+      </button>
+
+      {/* ─── BUZZ MODE SELECTOR ─── */}
+      <div style={{
+        background: T.surface, border: `1px solid ${T.border}`,
+        borderRadius: 16, padding: 16, marginBottom: 12,
+      }}>
+        <div style={{
+          color: T.textDim, fontSize: 10, letterSpacing: 2,
+          marginBottom: 10, textTransform: 'uppercase',
+        }}>Mode de buzz</div>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(3, 1fr)',
+          gap: 8,
+        }}>
+          {Object.entries(BUZZ_MODES).map(([key, cfg]) => {
+            const active = room.buzzMode === key;
+            return (
+              <button
+                key={key}
+                onClick={() => action('admin:set-buzz-mode', { mode: key })}
+                style={{
+                  padding: '12px 8px', borderRadius: 12, cursor: 'pointer',
+                  border: `2px solid ${active ? cfg.color : T.border}`,
+                  background: active ? `${cfg.color}15` : 'transparent',
+                  textAlign: 'center', transition: 'all 0.2s',
+                }}
+              >
+                <div style={{ fontSize: 22, marginBottom: 4 }}>{cfg.icon}</div>
+                <div style={{
+                  color: active ? cfg.color : T.textDim,
+                  fontSize: 12, fontWeight: 700, letterSpacing: 0.5,
+                }}>{cfg.label}</div>
+                <div style={{
+                  color: T.textMuted, fontSize: 9, marginTop: 4,
+                  lineHeight: 1.3,
+                }}>{cfg.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ─── TIMER CONTROLS ─── */}
+      <div style={{
+        background: T.surface, border: `1px solid ${T.border}`,
+        borderRadius: 16, padding: 16, marginBottom: 12,
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginBottom: timerIsActive ? 12 : 0,
+        }}>
+          <div style={{
+            color: T.textDim, fontSize: 10, letterSpacing: 2, textTransform: 'uppercase',
+          }}>⏱️ Timer</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {!room.timerRunning && elapsed === 0 && (
+              smallBtn('▶ Start', T.green, 'rgba(0,230,118,0.3)',
+                () => action('admin:timer-start'))
+            )}
+            {room.timerRunning && (
+              smallBtn('⏸ Pause', T.yellow, 'rgba(255,214,0,0.3)',
+                () => action('admin:timer-pause'))
+            )}
+            {!room.timerRunning && elapsed > 0 && (
+              <>
+                {smallBtn('▶ Reprendre', T.green, 'rgba(0,230,118,0.3)',
+                  () => action('admin:timer-resume'))}
+                {smallBtn('⏹ Stop', T.danger, 'rgba(255,23,68,0.3)',
+                  () => action('admin:timer-stop'))}
+              </>
+            )}
+            {room.timerRunning && (
+              smallBtn('⏹ Stop', T.danger, 'rgba(255,23,68,0.3)',
+                () => action('admin:timer-stop'))
+            )}
+          </div>
+        </div>
+
+        {timerIsActive && (
+          <div style={{ textAlign: 'center', padding: '4px 0' }}>
+            <span style={{
+              fontFamily: "'Orbitron', monospace",
+              fontSize: 'clamp(28px, 7vw, 48px)',
+              color: room.timerRunning ? T.yellow : T.textDim,
+              fontWeight: 900, letterSpacing: 4,
+              textShadow: room.timerRunning ? '0 0 30px rgba(255,214,0,0.3)' : 'none',
+            }}>{(elapsed / 1000).toFixed(1)}s</span>
+            {!room.timerRunning && elapsed > 0 && (
+              <div style={{
+                color: T.textMuted, fontSize: 10, letterSpacing: 2,
+                marginTop: 4, textTransform: 'uppercase',
+              }}>En pause</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ─── QUICK ACTIONS ─── */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-        gap: 12, marginBottom: 16,
+        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: 10, marginBottom: 16,
       }}>
-        {/* Buzzer toggle */}
+        {/* New round with timer */}
         <button
-          onClick={() => action('admin:toggle-buzzer')}
-          style={{
-            background: room.buzzerEnabled ? 'rgba(0,230,118,0.08)' : T.surface,
-            border: `2px solid ${room.buzzerEnabled ? T.green : T.border}`,
-            borderRadius: 16, padding: 20, cursor: 'pointer',
-            textAlign: 'center', transition: 'all 0.2s',
-          }}
-        >
-          <div style={{ fontSize: 28, marginBottom: 6 }}>
-            {room.buzzerEnabled ? '🟢' : '🔴'}
-          </div>
-          <div style={{
-            color: room.buzzerEnabled ? T.green : T.accent,
-            fontSize: 12, fontWeight: 700, letterSpacing: 1,
-            fontFamily: "'JetBrains Mono', monospace",
-          }}>{room.buzzerEnabled ? 'BUZZER ACTIF' : 'BUZZER OFF'}</div>
-        </button>
-
-        {/* Rebuzz toggle */}
-        <button
-          onClick={() => action('admin:toggle-rebuzz')}
-          style={{
-            background: room.allowRebuzz ? 'rgba(255,145,0,0.08)' : T.surface,
-            border: `2px solid ${room.allowRebuzz ? T.orange : T.border}`,
-            borderRadius: 16, padding: 20, cursor: 'pointer',
-            textAlign: 'center', transition: 'all 0.2s',
-          }}
-        >
-          <div style={{ fontSize: 28, marginBottom: 6 }}>
-            {room.allowRebuzz ? '🔄' : '🚫'}
-          </div>
-          <div style={{
-            color: room.allowRebuzz ? T.orange : T.textDim,
-            fontSize: 12, fontWeight: 700, letterSpacing: 1,
-            fontFamily: "'JetBrains Mono', monospace",
-          }}>{room.allowRebuzz ? 'RE-BUZZ OK' : 'BUZZ UNIQUE'}</div>
-        </button>
-
-        {/* New round */}
-        <button
-          onClick={() => action('admin:new-round')}
+          onClick={() => action('admin:new-round', { withTimer: true })}
           style={{
             background: 'rgba(255,214,0,0.08)', border: `2px solid ${T.yellow}`,
-            borderRadius: 16, padding: 20, cursor: 'pointer',
+            borderRadius: 14, padding: 16, cursor: 'pointer',
             textAlign: 'center', transition: 'all 0.2s',
           }}
         >
-          <div style={{ fontSize: 28, marginBottom: 6 }}>⏱️</div>
+          <div style={{ fontSize: 22, marginBottom: 4 }}>⏱️</div>
           <div style={{
-            color: T.yellow, fontSize: 12, fontWeight: 700, letterSpacing: 1,
-            fontFamily: "'JetBrains Mono', monospace",
-          }}>NOUVEAU ROUND</div>
+            color: T.yellow, fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+          }}>Nouveau round<br /><span style={{ fontSize: 9, color: T.textDim }}>+ timer</span></div>
         </button>
 
-        {/* Reset */}
+        {/* New round without timer */}
+        <button
+          onClick={() => action('admin:new-round', { withTimer: false })}
+          style={{
+            background: 'rgba(0,230,118,0.06)', border: `2px solid rgba(0,230,118,0.4)`,
+            borderRadius: 14, padding: 16, cursor: 'pointer',
+            textAlign: 'center', transition: 'all 0.2s',
+          }}
+        >
+          <div style={{ fontSize: 22, marginBottom: 4 }}>🔄</div>
+          <div style={{
+            color: T.green, fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+          }}>Nouveau round<br /><span style={{ fontSize: 9, color: T.textDim }}>sans timer</span></div>
+        </button>
+
+        {/* Clear buzzes only */}
+        <button
+          onClick={() => action('admin:clear-buzzes')}
+          style={{
+            background: T.surface, border: `2px solid ${T.border}`,
+            borderRadius: 14, padding: 16, cursor: 'pointer',
+            textAlign: 'center', transition: 'all 0.2s',
+          }}
+        >
+          <div style={{ fontSize: 22, marginBottom: 4 }}>🧹</div>
+          <div style={{
+            color: T.textDim, fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+          }}>Effacer buzz<br /><span style={{ fontSize: 9 }}>garder timer</span></div>
+        </button>
+
+        {/* Full reset */}
         <button
           onClick={() => action('admin:reset')}
           style={{
             background: T.surface, border: `2px solid ${T.border}`,
-            borderRadius: 16, padding: 20, cursor: 'pointer',
+            borderRadius: 14, padding: 16, cursor: 'pointer',
             textAlign: 'center', transition: 'all 0.2s',
           }}
         >
-          <div style={{ fontSize: 28, marginBottom: 6 }}>🗑️</div>
+          <div style={{ fontSize: 22, marginBottom: 4 }}>🗑️</div>
           <div style={{
-            color: T.textDim, fontSize: 12, fontWeight: 700, letterSpacing: 1,
-            fontFamily: "'JetBrains Mono', monospace",
-          }}>RESET TOUT</div>
+            color: T.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: 0.5,
+          }}>Reset tout</div>
         </button>
       </div>
-
-      {/* ─── TIMER ─── */}
-      {room.timerRunning && (
-        <div style={{ textAlign: 'center', marginBottom: 16, padding: '8px 0' }}>
-          <span style={{
-            fontFamily: "'Orbitron', monospace",
-            fontSize: 'clamp(28px, 7vw, 48px)',
-            color: T.yellow, fontWeight: 900, letterSpacing: 4,
-            textShadow: '0 0 30px rgba(255,214,0,0.3)',
-          }}>{(elapsed / 1000).toFixed(1)}s</span>
-        </div>
-      )}
 
       {/* ─── BUZZ LIST ─── */}
       <div style={{
         background: T.surface, border: `1px solid ${T.border}`,
         borderRadius: 16, padding: 20, marginBottom: 16,
       }}>
-        {sectionTitle('🔔', 'Buzz', buzzes.length)}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
+        }}>
+          <span style={{ fontSize: 16 }}>🔔</span>
+          <span style={{ color: T.text, fontSize: 15, fontWeight: 700, letterSpacing: 1 }}>Buzz</span>
+          <span style={{
+            background: T.surfaceHover, color: T.textDim,
+            fontSize: 11, fontWeight: 700, padding: '2px 8px',
+            borderRadius: 8, marginLeft: 4,
+          }}>{buzzes.length}</span>
+        </div>
+
         {buzzes.length === 0 ? (
           <div style={{
-            color: T.textMuted, textAlign: 'center',
-            padding: 20, fontSize: 13,
+            color: T.textMuted, textAlign: 'center', padding: 20, fontSize: 13,
           }}>Aucun buzz pour le moment</div>
         ) : (
           buzzes.map((b, i) => (
-            <div key={b.playerId} style={{
+            <div key={`${b.playerId}-${b.time}`} style={{
               display: 'flex', alignItems: 'center', gap: 12,
               padding: '12px 16px', borderRadius: 12,
               background: i === 0 ? 'rgba(255,214,0,0.08)' : T.surfaceHover,
@@ -268,11 +367,18 @@ export default function AdminView({ room, socket, onLeave }) {
               <div style={{ flex: 1 }}>
                 <div style={{ color: T.text, fontWeight: 700, fontSize: 14 }}>{b.pseudo}</div>
               </div>
-              <span style={{
-                fontFamily: "'Orbitron', monospace",
-                fontSize: 14, fontWeight: 700,
-                color: i === 0 ? T.yellow : T.textDim,
-              }}>{formatTime(b.relativeTime)}</span>
+              {elapsed > 0 || b.relativeTime > 0 ? (
+                <span style={{
+                  fontFamily: "'Orbitron', monospace",
+                  fontSize: 14, fontWeight: 700,
+                  color: i === 0 ? T.yellow : T.textDim,
+                }}>{formatTime(b.relativeTime)}</span>
+              ) : (
+                <span style={{
+                  fontFamily: "'Orbitron', monospace",
+                  fontSize: 12, color: T.textMuted,
+                }}>#{i + 1}</span>
+              )}
             </div>
           ))
         )}
@@ -287,7 +393,15 @@ export default function AdminView({ room, socket, onLeave }) {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           flexWrap: 'wrap', gap: 8, marginBottom: 16,
         }}>
-          {sectionTitle('👥', 'Joueurs', players.length)}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>👥</span>
+            <span style={{ color: T.text, fontSize: 15, fontWeight: 700, letterSpacing: 1 }}>Joueurs</span>
+            <span style={{
+              background: T.surfaceHover, color: T.textDim,
+              fontSize: 11, fontWeight: 700, padding: '2px 8px',
+              borderRadius: 8, marginLeft: 4,
+            }}>{players.length}</span>
+          </div>
           <div style={{ display: 'flex', gap: 6 }}>
             {smallBtn('✅ Activer tous', T.green, 'rgba(0,230,118,0.3)',
               () => action('admin:enable-all-buzzers'))}
@@ -333,7 +447,7 @@ export default function AdminView({ room, socket, onLeave }) {
         )}
       </div>
 
-      {/* ─── OVERLAY INFO ─── */}
+      {/* ─── OVERLAY ─── */}
       <div style={{
         background: T.surface, border: `1px solid ${T.border}`,
         borderRadius: 16, padding: 20,
@@ -345,28 +459,100 @@ export default function AdminView({ room, socket, onLeave }) {
             color: T.text, fontSize: 15, fontWeight: 700,
             cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
             padding: 0, letterSpacing: 1, width: '100%',
-            fontFamily: "'JetBrains Mono', monospace",
           }}
         >📺 Overlay OBS {showOverlay ? '▾' : '▸'}</button>
 
         {showOverlay && (
           <div style={{ marginTop: 16 }}>
             <p style={{ color: T.textDim, fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
-              Ajoute une source "Navigateur" (Browser Source) dans OBS avec l'URL ci-dessous.
-              Active le fond transparent dans les propriétés de la source.
+              Ajoute une source "Navigateur" dans OBS. Active le fond transparent.
             </p>
             <div
               onClick={() => navigator.clipboard?.writeText(overlayUrl)}
               style={{
                 background: T.bg, padding: '12px 16px', borderRadius: 10,
                 color: T.accent, fontSize: 12, wordBreak: 'break-all',
-                lineHeight: 1.6, border: `1px solid ${T.border}`,
-                cursor: 'pointer',
+                lineHeight: 1.6, border: `1px solid ${T.border}`, cursor: 'pointer',
               }}
               title="Cliquer pour copier"
             >{overlayUrl}</div>
             <p style={{ color: T.textMuted, fontSize: 11, marginTop: 8 }}>
-              Clic sur l'URL pour copier — Dimensions recommandées : 500×700px
+              Clic pour copier — 500×700px recommandé
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ─── EMBED ─── */}
+      <div style={{
+        background: T.surface, border: `1px solid ${T.border}`,
+        borderRadius: 16, padding: 20, marginTop: 16,
+      }}>
+        <button
+          onClick={() => setShowEmbed(!showEmbed)}
+          style={{
+            background: 'none', border: 'none',
+            color: T.text, fontSize: 15, fontWeight: 700,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+            padding: 0, letterSpacing: 1, width: '100%',
+          }}
+        >🔗 Intégration embed {showEmbed ? '▾' : '▸'}</button>
+
+        {showEmbed && (
+          <div style={{ marginTop: 16 }}>
+            <p style={{ color: T.textDim, fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
+              Intègre le buzzer dans une autre app via iframe.
+            </p>
+
+            <div style={{ color: T.textDim, fontSize: 11, letterSpacing: 1, marginTop: 14, marginBottom: 6, textTransform: 'uppercase' }}>
+              URL de base
+            </div>
+            <div
+              onClick={() => navigator.clipboard?.writeText(embedUrlWithPassword)}
+              style={{
+                background: T.bg, padding: '12px 16px', borderRadius: 10,
+                color: T.accent, fontSize: 12, wordBreak: 'break-all',
+                lineHeight: 1.6, border: `1px solid ${T.border}`, cursor: 'pointer',
+              }}
+              title="Cliquer pour copier"
+            >{embedUrlWithPassword}</div>
+
+            <div style={{ color: T.textDim, fontSize: 11, letterSpacing: 1, marginTop: 14, marginBottom: 6, textTransform: 'uppercase' }}>
+              Exemple auto-join
+            </div>
+            <div
+              onClick={() => {
+                const example = `${embedUrlWithPassword}${room.password ? '&' : '?'}pseudo=Jean&avatar=${encodeURIComponent('🦊')}`;
+                navigator.clipboard?.writeText(example);
+              }}
+              style={{
+                background: T.bg, padding: '12px 16px', borderRadius: 10,
+                color: T.orange, fontSize: 12, wordBreak: 'break-all',
+                lineHeight: 1.6, border: `1px solid ${T.border}`, cursor: 'pointer',
+              }}
+              title="Cliquer pour copier"
+            >{embedUrlWithPassword}{room.password ? '&' : '?'}pseudo=Jean&avatar=🦊</div>
+
+            <div style={{ color: T.textDim, fontSize: 11, letterSpacing: 1, marginTop: 14, marginBottom: 6, textTransform: 'uppercase' }}>
+              Code iframe
+            </div>
+            <div
+              onClick={() => {
+                const iframe = `<iframe src="${embedUrlWithPassword}" style="width:100%;height:400px;border:none;"></iframe>`;
+                navigator.clipboard?.writeText(iframe);
+              }}
+              style={{
+                background: T.bg, padding: '12px 16px', borderRadius: 10,
+                color: T.green, fontSize: 11, wordBreak: 'break-all',
+                lineHeight: 1.6, border: `1px solid ${T.border}`, cursor: 'pointer',
+              }}
+              title="Cliquer pour copier"
+            >{`<iframe src="${embedUrlWithPassword}" style="width:100%;height:400px;border:none;"></iframe>`}</div>
+
+            <p style={{ color: T.textMuted, fontSize: 11, marginTop: 12, lineHeight: 1.6 }}>
+              Clic sur un bloc pour copier.
+              Params : <span style={{ color: T.text }}>pseudo</span>, <span style={{ color: T.text }}>avatar</span>, <span style={{ color: T.text }}>password</span>.
+              Communication via <span style={{ color: T.text }}>postMessage</span>.
             </p>
           </div>
         )}

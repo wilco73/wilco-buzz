@@ -6,6 +6,39 @@ import JoinRoomScreen from './screens/JoinRoomScreen.jsx';
 import AdminView from './screens/AdminView.jsx';
 import PlayerView from './screens/PlayerView.jsx';
 import OverlayView from './screens/OverlayView.jsx';
+import EmbedView from './screens/EmbedView.jsx';
+
+/**
+ * Hash routing:
+ *   (none)                → Home
+ *   #overlay-XXXX         → OBS overlay
+ *   #embed-XXXX           → Embedded buzzer (manual pseudo entry)
+ *   #embed-XXXX?pseudo=X&avatar=🦊&password=ABC → Embedded buzzer (auto-join)
+ */
+function parseHash() {
+  const hash = window.location.hash;
+  if (!hash) return { mode: 'app' };
+
+  if (hash.startsWith('#overlay-')) {
+    const code = hash.replace('#overlay-', '').split('?')[0];
+    return { mode: 'overlay', roomCode: code };
+  }
+
+  if (hash.startsWith('#embed-')) {
+    const [path, queryString] = hash.replace('#embed-', '').split('?');
+    const code = path;
+    const params = {};
+    if (queryString) {
+      const searchParams = new URLSearchParams(queryString);
+      if (searchParams.get('pseudo')) params.pseudo = decodeURIComponent(searchParams.get('pseudo'));
+      if (searchParams.get('avatar')) params.avatar = decodeURIComponent(searchParams.get('avatar'));
+      if (searchParams.get('password')) params.password = decodeURIComponent(searchParams.get('password'));
+    }
+    return { mode: 'embed', roomCode: code, params };
+  }
+
+  return { mode: 'app' };
+}
 
 export default function App() {
   const socket = useSocket();
@@ -15,14 +48,18 @@ export default function App() {
   const [playerId, setPlayerId] = useState('');
   const [playerInfo, setPlayerInfo] = useState(null);
   const [needsPassword, setNeedsPassword] = useState(false);
+  const [embedParams, setEmbedParams] = useState({});
 
-  // Check for overlay hash
+  // Route on load
   useEffect(() => {
-    const hash = window.location.hash;
-    if (hash.startsWith('#overlay-')) {
-      const code = hash.replace('#overlay-', '');
+    const { mode, roomCode: code, params } = parseHash();
+    if (mode === 'overlay') {
       setRoomCode(code);
       setScreen('overlay');
+    } else if (mode === 'embed') {
+      setRoomCode(code);
+      setEmbedParams(params || {});
+      setScreen('embed');
     }
   }, []);
 
@@ -32,6 +69,7 @@ export default function App() {
       setRoomState(data);
     });
     const unsub2 = socket.on('kicked', () => {
+      if (screen === 'embed') return;
       setScreen('home');
       setRoomCode('');
       setPlayerId('');
@@ -40,6 +78,7 @@ export default function App() {
       alert('Tu as été expulsé de la room.');
     });
     const unsub3 = socket.on('room-closed', () => {
+      if (screen === 'embed') return;
       setScreen('home');
       setRoomCode('');
       setPlayerId('');
@@ -48,7 +87,7 @@ export default function App() {
       alert("L'admin a fermé la room.");
     });
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [socket]);
+  }, [socket, screen]);
 
   const goHome = () => {
     setScreen('home');
@@ -91,7 +130,7 @@ export default function App() {
     setPlayerInfo({ pseudo, avatar });
     setRoomState(res.room);
     setScreen('player');
-    return null; // no error
+    return null;
   };
 
   const handleBuzz = async () => {
@@ -107,10 +146,22 @@ export default function App() {
     }
   }, [screen, roomCode, socket.connected]);
 
+  // Special full-page modes
   if (screen === 'overlay') {
     return <OverlayView room={roomState} />;
   }
 
+  if (screen === 'embed') {
+    return (
+      <EmbedView
+        roomCode={roomCode}
+        params={embedParams}
+        socket={socket}
+      />
+    );
+  }
+
+  // Standard app
   switch (screen) {
     case 'home':
       return (
