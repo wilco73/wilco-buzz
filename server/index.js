@@ -273,6 +273,12 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.buzzerEnabled = !room.buzzerEnabled;
+    // When activating buzzers, also re-enable all individual players
+    if (room.buzzerEnabled) {
+      for (const p of Object.values(room.players)) {
+        if (!p.kicked) p.buzzerDisabled = false;
+      }
+    }
     broadcast(room);
   });
 
@@ -342,7 +348,7 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // Timer: stop (reset to 0)
+  // Timer: stop (reset to 0, disable buzzers — this ends the round)
   socket.on('admin:timer-stop', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -352,6 +358,7 @@ io.on('connection', (socket) => {
     room.timerStart = null;
     room.timerElapsed = 0;
     room.timerExpired = false;
+    room.buzzerEnabled = false;
     broadcast(room);
   });
 
