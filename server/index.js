@@ -22,9 +22,8 @@ const io = new Server(httpServer, {
   pingTimeout: 5000,
 });
 
-// ─── In-memory room store ───────────────────────────────────────────────────
 const rooms = new Map();
-const roomTimers = new Map(); // roomCode -> setTimeout id for countdown
+const roomTimers = new Map();
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -41,6 +40,19 @@ function generatePassword() {
   return pw;
 }
 
+/**
+ * Player flags:
+ *   manuallyBlocked: boolean — set by admin "Bloquer" button, survives new-round
+ *   buzzerDisabled: boolean  — computed = manuallyBlocked OR systemBlocked
+ *
+ * We store manuallyBlocked on the player object.
+ * buzzerDisabled is derived: true if manuallyBlocked, or if the system
+ * blocked them (post-buzz in standard/exclusive mode, timer expired, etc.)
+ *
+ * For simplicity we keep buzzerDisabled as the single flag sent to clients,
+ * but we use manuallyBlocked to know what to preserve across rounds.
+ */
+
 function getRoomPublicState(room) {
   const players = {};
   for (const [id, p] of Object.entries(room.players)) {
@@ -49,6 +61,7 @@ function getRoomPublicState(room) {
         pseudo: p.pseudo,
         avatar: p.avatar,
         buzzerDisabled: p.buzzerDisabled,
+        manuallyBlocked: p.manuallyBlocked || false,
       };
     }
   }
@@ -57,13 +70,12 @@ function getRoomPublicState(room) {
     hasPassword: !!room.password,
     buzzerEnabled: room.buzzerEnabled,
     buzzMode: room.buzzMode,
-    // Timer state
     timerRunning: room.timerRunning,
     timerStart: room.timerStart,
     timerElapsed: room.timerElapsed,
-    timerDuration: room.timerDuration, // 0 = stopwatch (count up), >0 = countdown in seconds
+    timerDuration: room.timerDuration,
     timerExpired: room.timerExpired,
-    serverTime: Date.now(), // for client clock offset correction
+    serverTime: Date.now(),
     players,
     buzzes: room.buzzes,
   };
@@ -82,7 +94,6 @@ function broadcast(room) {
   io.to(`overlay:${room.code}`).emit('room-update', getRoomPublicState(room));
 }
 
-// Clear any running countdown timeout for a room
 function clearCountdown(code) {
   if (roomTimers.has(code)) {
     clearTimeout(roomTimers.get(code));
@@ -90,41 +101,42 @@ function clearCountdown(code) {
   }
 }
 
-// Schedule countdown expiry
 function scheduleCountdown(room) {
   clearCountdown(room.code);
   if (!room.timerRunning || room.timerDuration <= 0) return;
-
-  // How much time remains?
   const totalMs = room.timerDuration * 1000;
-  const alreadyElapsed = room.timerElapsed; // from previous pause/resume cycles
-  const remaining = totalMs - alreadyElapsed;
-
-  if (remaining <= 0) {
-    onTimerExpired(room);
-    return;
-  }
-
-  const timeout = setTimeout(() => {
-    onTimerExpired(room);
-  }, remaining);
-
-  roomTimers.set(room.code, timeout);
+  const remaining = totalMs - room.timerElapsed;
+  if (remaining <= 0) { onTimerExpired(room); return; }
+  roomTimers.set(room.code, setTimeout(() => onTimerExpired(room), remaining));
 }
 
 function onTimerExpired(room) {
   clearCountdown(room.code);
-  // Freeze the timer at exactly the duration
   room.timerElapsed = room.timerDuration * 1000;
   room.timerRunning = false;
   room.timerStart = null;
   room.timerExpired = true;
-  // Disable all buzzers
   room.buzzerEnabled = false;
   for (const p of Object.values(room.players)) {
     if (!p.kicked) p.buzzerDisabled = true;
   }
   broadcast(room);
+}
+
+// Helper: re-enable all non-manually-blocked players
+function enableSystemPlayers(room) {
+  for (const p of Object.values(room.players)) {
+    if (!p.kicked) {
+      p.buzzerDisabled = p.manuallyBlocked || false;
+    }
+  }
+}
+
+// Helper: disable all players
+function disableAllPlayers(room) {
+  for (const p of Object.values(room.players)) {
+    if (!p.kicked) p.buzzerDisabled = true;
+  }
 }
 
 // ─── Socket.io ──────────────────────────────────────────────────────────────
@@ -133,7 +145,6 @@ io.on('connection', (socket) => {
   let currentPlayerId = null;
   let isAdmin = false;
 
-  // ─── CREATE ROOM ───
   socket.on('create-room', ({ usePassword }, callback) => {
     const code = generateRoomCode();
     const room = {
@@ -145,7 +156,7 @@ io.on('connection', (socket) => {
       timerRunning: false,
       timerStart: null,
       timerElapsed: 0,
-      timerDuration: 0, // 0 = stopwatch, >0 = countdown seconds
+      timerDuration: 0,
       timerExpired: false,
       players: {},
       buzzes: [],
@@ -159,14 +170,12 @@ io.on('connection', (socket) => {
     callback({ ok: true, room: getRoomAdminState(room) });
   });
 
-  // ─── CHECK ROOM ───
   socket.on('check-room', ({ code }, callback) => {
     const room = rooms.get(code);
     if (!room) return callback({ ok: false, error: 'Room introuvable' });
     callback({ ok: true, hasPassword: !!room.password });
   });
 
-  // ─── JOIN ROOM (player) ───
   socket.on('join-room', ({ code, pseudo, avatar, password }, callback) => {
     const room = rooms.get(code);
     if (!room) return callback({ ok: false, error: 'Room introuvable' });
@@ -182,6 +191,7 @@ io.on('connection', (socket) => {
     room.players[playerId] = {
       pseudo, avatar,
       buzzerDisabled: false,
+      manuallyBlocked: false,
       kicked: false,
       socketId: socket.id,
       joinedAt: Date.now(),
@@ -191,14 +201,11 @@ io.on('connection', (socket) => {
     currentPlayerId = playerId;
     isAdmin = false;
     socket.join(`room:${code}`);
-
     io.to(`admin:${code}`).emit('room-update', getRoomAdminState(room));
     io.to(`overlay:${code}`).emit('room-update', getRoomPublicState(room));
-
     callback({ ok: true, playerId, room: getRoomPublicState(room) });
   });
 
-  // ─── JOIN OVERLAY ───
   socket.on('join-overlay', ({ code }, callback) => {
     const room = rooms.get(code);
     if (!room) return callback({ ok: false, error: 'Room introuvable' });
@@ -213,7 +220,6 @@ io.on('connection', (socket) => {
     if (!currentRoom || !currentPlayerId) return callback?.({ ok: false });
     const room = rooms.get(currentRoom);
     if (!room) return callback?.({ ok: false });
-
     const player = room.players[currentPlayerId];
     if (!player || player.kicked || player.buzzerDisabled) return callback?.({ ok: false });
     if (!room.buzzerEnabled) return callback?.({ ok: false });
@@ -226,39 +232,27 @@ io.on('connection', (socket) => {
 
     if (room.buzzMode === 'rebuzz') {
       room.buzzes.push({
-        playerId: currentPlayerId,
-        pseudo: player.pseudo,
-        avatar: player.avatar,
-        time: buzzTime,
-        relativeTime,
+        playerId: currentPlayerId, pseudo: player.pseudo,
+        avatar: player.avatar, time: buzzTime, relativeTime,
       });
     } else if (room.buzzMode === 'exclusive') {
-      if (room.buzzes.length > 0) {
-        return callback?.({ ok: false, error: 'Quelqu\'un a déjà buzzé' });
-      }
+      if (room.buzzes.length > 0) return callback?.({ ok: false });
       room.buzzes.push({
-        playerId: currentPlayerId,
-        pseudo: player.pseudo,
-        avatar: player.avatar,
-        time: buzzTime,
-        relativeTime,
+        playerId: currentPlayerId, pseudo: player.pseudo,
+        avatar: player.avatar, time: buzzTime, relativeTime,
       });
-      for (const p of Object.values(room.players)) {
-        if (!p.kicked) p.buzzerDisabled = true;
-      }
+      // Lock ALL players (system block)
+      disableAllPlayers(room);
     } else {
       // Standard
       if (room.buzzes.find((b) => b.playerId === currentPlayerId)) {
-        return callback?.({ ok: false, error: 'Déjà buzzé' });
+        return callback?.({ ok: false });
       }
       room.buzzes.push({
-        playerId: currentPlayerId,
-        pseudo: player.pseudo,
-        avatar: player.avatar,
-        time: buzzTime,
-        relativeTime,
+        playerId: currentPlayerId, pseudo: player.pseudo,
+        avatar: player.avatar, time: buzzTime, relativeTime,
       });
-      player.buzzerDisabled = true;
+      player.buzzerDisabled = true; // system block after buzzing
     }
 
     room.buzzes.sort((a, b) => a.time - b.time);
@@ -268,36 +262,32 @@ io.on('connection', (socket) => {
 
   // ─── ADMIN ACTIONS ───
 
+  // Toggle buzzers globally
   socket.on('admin:toggle-buzzer', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.buzzerEnabled = !room.buzzerEnabled;
-    // When activating buzzers, also re-enable all individual players
     if (room.buzzerEnabled) {
-      for (const p of Object.values(room.players)) {
-        if (!p.kicked) p.buzzerDisabled = false;
-      }
+      // Re-enable everyone except manually blocked
+      enableSystemPlayers(room);
     }
     broadcast(room);
   });
 
-  // Change buzz mode — also resets buzzes and re-enables all buzzers
+  // Change buzz mode — resets buzzes, re-enables non-manually-blocked
   socket.on('admin:set-buzz-mode', ({ mode }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
     if (!['standard', 'exclusive', 'rebuzz'].includes(mode)) return;
     room.buzzMode = mode;
-    // Reset state so the new mode starts clean
     room.buzzes = [];
-    for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = false;
-    }
+    enableSystemPlayers(room);
     broadcast(room);
   });
 
-  // Set timer duration (0 = stopwatch, >0 = countdown seconds)
+  // Set timer duration — resets timer
   socket.on('admin:set-timer-duration', ({ duration }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -311,7 +301,6 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // Timer: start (resets to 0 and starts)
   socket.on('admin:timer-start', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -324,7 +313,6 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // Timer: pause
   socket.on('admin:timer-pause', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -336,7 +324,6 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // Timer: resume
   socket.on('admin:timer-resume', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -348,7 +335,7 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // Timer: stop (reset to 0, disable buzzers — this ends the round)
+  // Stop timer = end the round: disable buzzers
   socket.on('admin:timer-stop', () => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -362,7 +349,7 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
-  // New round
+  // New round: clear buzzes, activate buzzers, re-enable non-manually-blocked
   socket.on('admin:new-round', ({ withTimer }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
@@ -371,9 +358,7 @@ io.on('connection', (socket) => {
     room.buzzes = [];
     room.buzzerEnabled = true;
     room.timerExpired = false;
-    for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = false;
-    }
+    enableSystemPlayers(room); // re-enable all except manuallyBlocked
     if (withTimer) {
       room.timerRunning = true;
       room.timerStart = Date.now();
@@ -395,8 +380,12 @@ io.on('connection', (socket) => {
     room.timerElapsed = 0;
     room.timerExpired = false;
     room.buzzerEnabled = false;
+    // Full reset clears manual blocks too
     for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = false;
+      if (!p.kicked) {
+        p.buzzerDisabled = false;
+        p.manuallyBlocked = false;
+      }
     }
     broadcast(room);
   });
@@ -407,9 +396,7 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoom);
     if (!room) return;
     room.buzzes = [];
-    for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = false;
-    }
+    enableSystemPlayers(room);
     broadcast(room);
   });
 
@@ -424,11 +411,14 @@ io.on('connection', (socket) => {
     broadcast(room);
   });
 
+  // Manual block/unblock — this is the admin "Bloquer"/"Débloquer" button
   socket.on('admin:toggle-player-buzzer', ({ playerId }) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room || !room.players[playerId]) return;
-    room.players[playerId].buzzerDisabled = !room.players[playerId].buzzerDisabled;
+    const p = room.players[playerId];
+    p.manuallyBlocked = !p.manuallyBlocked;
+    p.buzzerDisabled = p.manuallyBlocked;
     broadcast(room);
   });
 
@@ -437,7 +427,10 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoom);
     if (!room) return;
     for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = false;
+      if (!p.kicked) {
+        p.buzzerDisabled = false;
+        p.manuallyBlocked = false;
+      }
     }
     broadcast(room);
   });
@@ -447,7 +440,10 @@ io.on('connection', (socket) => {
     const room = rooms.get(currentRoom);
     if (!room) return;
     for (const p of Object.values(room.players)) {
-      if (!p.kicked) p.buzzerDisabled = true;
+      if (!p.kicked) {
+        p.buzzerDisabled = true;
+        p.manuallyBlocked = true;
+      }
     }
     broadcast(room);
   });
@@ -460,12 +456,10 @@ io.on('connection', (socket) => {
     io.to(`admin:${currentRoom}`).emit('room-update', getRoomAdminState(room));
   });
 
-  // ─── DISCONNECT ───
   socket.on('disconnect', () => {
     if (!currentRoom) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
-
     if (isAdmin) {
       clearCountdown(currentRoom);
       io.to(`room:${currentRoom}`).emit('room-closed');
@@ -478,7 +472,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// SPA fallback
 app.get('*', (req, res) => {
   res.sendFile(path.join(distPath, 'index.html'));
 });
