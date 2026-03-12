@@ -17,6 +17,16 @@ export default function OverlayView({ room }) {
 
   const buzzes = room?.buzzes || [];
   const timerIsActive = room?.timerRunning || (room?.timerElapsed > 0);
+  const isCountdown = (room?.timerDuration || 0) > 0;
+
+  let displayTime;
+  if (isCountdown) {
+    const totalMs = (room?.timerDuration || 0) * 1000;
+    const remaining = Math.max(0, totalMs - elapsed);
+    displayTime = (remaining / 1000).toFixed(1) + 's';
+  } else {
+    displayTime = (elapsed / 1000).toFixed(1) + 's';
+  }
 
   return (
     <div style={{
@@ -34,14 +44,20 @@ export default function OverlayView({ room }) {
             borderRadius: 16,
             background: 'rgba(0,0,0,0.75)',
             backdropFilter: 'blur(12px)',
-            border: '1px solid rgba(255,214,0,0.3)',
+            border: `1px solid ${room?.timerExpired ? 'rgba(255,23,68,0.5)' : 'rgba(255,214,0,0.3)'}`,
           }}>
             <span style={{
               fontFamily: "'Orbitron', monospace",
               fontSize: 48, fontWeight: 900,
-              color: T.yellow,
-              textShadow: '0 0 20px rgba(255,214,0,0.5)',
-            }}>{(elapsed / 1000).toFixed(1)}s</span>
+              color: room?.timerExpired ? T.danger : T.yellow,
+              textShadow: `0 0 20px ${room?.timerExpired ? 'rgba(255,23,68,0.5)' : 'rgba(255,214,0,0.5)'}`,
+            }}>{displayTime}</span>
+            {room?.timerExpired && (
+              <div style={{
+                color: T.danger, fontSize: 12, fontWeight: 700,
+                letterSpacing: 2, marginTop: 4,
+              }}>TEMPS ÉCOULÉ</div>
+            )}
           </div>
         </div>
       )}

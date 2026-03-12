@@ -1,8 +1,32 @@
 import { useState } from 'react';
 import { T } from '../theme.js';
 
+const Toggle = ({ value, onChange }) => (
+  <button
+    onClick={onChange}
+    style={{
+      width: 52, height: 28, borderRadius: 14,
+      border: 'none',
+      background: value ? T.green : T.border,
+      cursor: 'pointer',
+      position: 'relative',
+      transition: 'background 0.3s',
+      flexShrink: 0,
+    }}
+  >
+    <div style={{
+      width: 22, height: 22, borderRadius: '50%',
+      background: '#fff',
+      position: 'absolute', top: 3,
+      left: value ? 27 : 3,
+      transition: 'left 0.3s',
+    }} />
+  </button>
+);
+
 export default function CreateRoomScreen({ onRoomCreated, onBack }) {
   const [usePassword, setUsePassword] = useState(false);
+  const [streamerMode, setStreamerMode] = useState(false);
 
   return (
     <div style={{
@@ -35,17 +59,23 @@ export default function CreateRoomScreen({ onRoomCreated, onBack }) {
           marginBottom: 32,
         }}>Nouvelle Room</h2>
 
+        {/* Options card */}
         <div style={{
           background: T.surface,
           border: `1px solid ${T.border}`,
           borderRadius: 16,
           padding: 24,
           marginBottom: 24,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 20,
         }}>
+          {/* Password toggle */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            gap: 16,
           }}>
             <div>
               <div style={{ color: T.text, fontWeight: 600, fontSize: 15 }}>
@@ -55,31 +85,48 @@ export default function CreateRoomScreen({ onRoomCreated, onBack }) {
                 Protéger l'accès à la room
               </div>
             </div>
-            <button
-              onClick={() => setUsePassword(!usePassword)}
-              style={{
-                width: 52, height: 28, borderRadius: 14,
-                border: 'none',
-                background: usePassword ? T.green : T.border,
-                cursor: 'pointer',
-                position: 'relative',
-                transition: 'background 0.3s',
-              }}
-            >
-              <div style={{
-                width: 22, height: 22, borderRadius: '50%',
-                background: '#fff',
-                position: 'absolute',
-                top: 3,
-                left: usePassword ? 27 : 3,
-                transition: 'left 0.3s',
-              }} />
-            </button>
+            <Toggle value={usePassword} onChange={() => setUsePassword(!usePassword)} />
           </div>
+
+          {/* Divider */}
+          <div style={{ height: 1, background: T.border }} />
+
+          {/* Streamer mode toggle */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+          }}>
+            <div>
+              <div style={{ color: T.text, fontWeight: 600, fontSize: 15 }}>
+                📺 Mode streamer
+              </div>
+              <div style={{ color: T.textDim, fontSize: 12, marginTop: 4 }}>
+                Cache le mot de passe par défaut
+              </div>
+            </div>
+            <Toggle value={streamerMode} onChange={() => setStreamerMode(!streamerMode)} />
+          </div>
+
+          {/* Info if both are on */}
+          {usePassword && streamerMode && (
+            <div style={{
+              background: 'rgba(156,39,176,0.1)',
+              border: '1px solid rgba(156,39,176,0.3)',
+              borderRadius: 10,
+              padding: '10px 14px',
+              color: '#ce93d8',
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}>
+              Le mot de passe sera flouté dans l'interface admin. Clique dessus pour le révéler temporairement.
+            </div>
+          )}
         </div>
 
         <button
-          onClick={() => onRoomCreated(usePassword)}
+          onClick={() => onRoomCreated({ usePassword, streamerMode })}
           style={{
             width: '100%',
             padding: '16px 32px',

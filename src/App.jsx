@@ -8,13 +8,6 @@ import PlayerView from './screens/PlayerView.jsx';
 import OverlayView from './screens/OverlayView.jsx';
 import EmbedView from './screens/EmbedView.jsx';
 
-/**
- * Hash routing:
- *   (none)                → Home
- *   #overlay-XXXX         → OBS overlay
- *   #embed-XXXX           → Embedded buzzer (manual pseudo entry)
- *   #embed-XXXX?pseudo=X&avatar=🦊&password=ABC → Embedded buzzer (auto-join)
- */
 function parseHash() {
   const hash = window.location.hash;
   if (!hash) return { mode: 'app' };
@@ -49,6 +42,7 @@ export default function App() {
   const [playerInfo, setPlayerInfo] = useState(null);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [embedParams, setEmbedParams] = useState({});
+  const [initialStreamerMode, setInitialStreamerMode] = useState(false);
 
   // Route on load
   useEffect(() => {
@@ -96,13 +90,15 @@ export default function App() {
     setPlayerInfo(null);
     setRoomState(null);
     setNeedsPassword(false);
+    setInitialStreamerMode(false);
   };
 
-  const handleCreateRoom = async (usePassword) => {
+  const handleCreateRoom = async ({ usePassword, streamerMode }) => {
     const res = await socket.emit('create-room', { usePassword });
     if (res.ok) {
       setRoomCode(res.room.code);
       setRoomState(res.room);
+      setInitialStreamerMode(streamerMode);
       setScreen('admin');
     }
   };
@@ -146,7 +142,7 @@ export default function App() {
     }
   }, [screen, roomCode, socket.connected]);
 
-  // Special full-page modes
+  // Special modes
   if (screen === 'overlay') {
     return <OverlayView room={roomState} />;
   }
@@ -161,7 +157,6 @@ export default function App() {
     );
   }
 
-  // Standard app
   switch (screen) {
     case 'home':
       return (
@@ -193,6 +188,7 @@ export default function App() {
           room={roomState}
           socket={socket}
           onLeave={goHome}
+          initialStreamerMode={initialStreamerMode}
         />
       );
     case 'player':
