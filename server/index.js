@@ -295,7 +295,12 @@ io.on('connection', (socket) => {
     if (!currentRoom || !isAdmin) return;
     const room = rooms.get(currentRoom);
     if (!room) return;
+    clearCountdown(room.code);
     room.timerDuration = Math.max(0, Math.floor(duration));
+    room.timerRunning = false;
+    room.timerStart = null;
+    room.timerElapsed = 0;
+    room.timerExpired = false;
     broadcast(room);
   });
 
